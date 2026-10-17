@@ -20,7 +20,9 @@
 # pushed digest with cosign as build.yml signs Weftline's images, attaches the Sigstore bundle as a referrer and
 # pushes the provenance beside it. Without it, the release is built, signed and attested into the run's artifact
 # (the OCI layout as a tar and its Sigstore bundle: the exported bundle the self-hosted edition's
-# WL_MARKETPLACE_BUNDLE names), and nothing is pushed.
+# WL_MARKETPLACE_BUNDLE names), and nothing is pushed to a registry. Either way the same two files are published as
+# the GitHub release catalog/<date>.<n> (a pre-release for canary), which a cell's marketplace.sync reads with
+# WL_MARKETPLACE_BUNDLE=github://weftline/marketplace when it has no registry (F-1202).
 #
 # Only weftline/marketplace publishes: the private overlay, made from the same template, validates its pull
 # requests and is merged into the public repository at release, never signed as itself.
@@ -125,7 +127,7 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     permissions:
-      contents: read # checkout
+      contents: write # checkout, and the release catalog/<release> with the bundle and its signature as assets
       id-token: write # OIDC: the wl-ci-marketplace-publish role, cosign's keyless certificate and the attestation's
       attestations: write # the SLSA provenance
     env:
@@ -256,6 +258,26 @@ jobs:
           path: ${{ runner.temp }}/out/
           retention-days: 90
           if-no-files-found: error
+
+      # The release on GitHub, catalog/<release>, with the layout's tar and its Sigstore bundle as its two assets: what
+      # a cell's marketplace.sync reads without a registry (WL_MARKETPLACE_BUNDLE=github://weftline/marketplace, F-1202),
+      # and what a self-hosted cell downloads to mirror. A canary release is a pre-release. A cell trusts the signature,
+      # verified against this workflow's identity and issuer, never the release or who made it.
+      - env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE: ${{ steps.release.outputs.release }}
+          COMMIT: ${{ steps.meta.outputs.commit }}
+          DIGEST: ${{ steps.build.outputs.digest }}
+        run: |
+          set -euo pipefail
+          cd "$RUNNER_TEMP/out"
+          pre=()
+          if [ "$CHANNEL" = canary ]; then
+            pre=(--prerelease)
+          fi
+          gh release create "catalog/$RELEASE" "catalog-$RELEASE.oci.tar" "catalog-$RELEASE.sigstore.json" \
+            --repo "$GITHUB_REPOSITORY" --target "$COMMIT" --title "catalog $RELEASE ($CHANNEL)" "${pre[@]}" \
+            --notes "The $CHANNEL catalog release $RELEASE, digest $DIGEST, signed by $IDENTITY (issuer $ISSUER). Verify catalog-$RELEASE.sigstore.json over the manifest blobs/sha256/${DIGEST#sha256:} of catalog-$RELEASE.oci.tar before you trust it."
 
       - env:
           RELEASE: ${{ steps.release.outputs.release }}
