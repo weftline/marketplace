@@ -1,0 +1,9 @@
+{
+  "name": "wl",
+  "version": "0.1.0",
+  "description": "Work on a Weftline intent in Claude Code, with its context and your organization's rules, and keep the record.",
+  "author": {
+    "name": "Weftline"
+  },
+  "keywords": ["weftline", "context", "governance"]
+}

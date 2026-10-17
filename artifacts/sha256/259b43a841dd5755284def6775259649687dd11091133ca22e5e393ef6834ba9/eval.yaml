@@ -1,0 +1,18 @@
+# Feature delivery's eval scenario (F-0712's evals, WORKFLOW_ENGINE.md section 9): two intents ran the template,
+# and the PR review asked for changes on the first. A renamed step changes no outcome; reviewing only high-risk
+# pull requests lets what the review caught escape.
+history:
+  - intent: Saved card selection at checkout
+    reworked: [verify/pr-approval]
+  - intent: Export invoices as CSV
+changes:
+  - name: Rename the release watch
+    patch:
+      - { op: replace, path: "spec.stages[4].steps[3].title", value: Production watch }
+    passed: true
+  - name: Review only high-risk pull requests
+    patch:
+      - { op: add, path: "spec.stages[3].steps[3].when", value: "run.risk == 'high'" }
+      - { op: replace, path: "spec.stages[3].exit", value: ["steps.merged.outcome == 'passed'"] }
+    passed: false
+    failed: [escaped_defects]

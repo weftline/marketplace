@@ -1,0 +1,13 @@
+# The Context MCP server (AGENTS_RUNTIME.md section 10.1, API.md section 11): api's /mcp, which local sessions,
+# runners and the wl plugin reach under the person's or the task's own token. Its version files repeat this
+# metadata; the digest of each is the fingerprint of the definitions that release ships (atlas/mcp/tools.json).
+apiVersion: marketplace.weftline.dev/v1
+kind: McpServer
+metadata:
+  id: weftline/context
+  title: Weftline Knowledge
+  description: "The Context MCP server on Weftline's api (/mcp): search, documents, context packs, cited answers and graph neighbors from the org's knowledge, and memory proposals to a project's inbox, under the person's or the task's own token."
+  publisher: { namespace: weftline, verified: weftline }
+  lifecycle: [plan, architecture, build, review, learn]
+  tags: [knowledge, context, atlas, first-party]
+  license: Proprietary

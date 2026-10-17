@@ -1,0 +1,39 @@
+apiVersion: marketplace.weftline.dev/v1
+kind: Plugin
+metadata:
+  id: weftline/wl
+  title: wl for Claude Code
+  description: Work on a Weftline intent in Claude Code, with its context and your organization's rules, and keep the record. The skills /wl:work, /wl:context, /wl:lesson and /wl:status, hooks that call wl hook, and the Context MCP server.
+  publisher: { namespace: weftline, verified: weftline }
+  lifecycle: [build, review, learn]
+  tags: [claude-code, plugin, first-party]
+  license: Proprietary
+spec:
+  version: 0.1.0
+  digest: "sha256:0bf68a4d97a84cac8612875a853d97bf3ed083905bd3c8b4cb22d845a322f7ff"
+  artifact: artifacts/sha256/0bf68a4d97a84cac8612875a853d97bf3ed083905bd3c8b4cb22d845a322f7ff/
+  upstream:
+    source: git
+    url: https://github.com/weftline/weftline
+    ref: plugin/v0.1.0
+    commit: 99f45c802bca8ead203436131dfb839db85a2a5d
+    docs: [https://code.claude.com/docs/en/plugins]
+  compatibility:
+    targets:
+      - { name: claude-code, versions: ">=2.1.296" }
+      - { name: weftline, as_of: "2026-10-15" }
+    runtimes: [local, runner]
+    clients: { claude-code: ">=2.1.296" }
+  permissions:
+    tools_requested: ["Bash(wl context)", "Bash(wl context *)", "Bash(wl status)", "Bash(wl work *)"]
+    credentials:
+      - { purpose: session, kind: token, scope: "the session's own token, which wl keeps in .wl/session.json", max_lifetime: 1h, class: propose, delegated: true }
+    data_classes: [confidential]
+    egress:
+      - { host: app.weftline.ai, port: 443 }
+    rule_of_two: { untrusted_output: ["Bash(wl context *)"], sensitive: [], egress: [] }
+  policy_defaults:
+    level: propose
+    autonomy_cap: L2
+    locked_rules: []
+  changelog: "CHANGELOG.md#010"

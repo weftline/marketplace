@@ -1,0 +1,32 @@
+apiVersion: marketplace.weftline.dev/v1
+kind: FlowTemplate
+metadata:
+  id: weftline/feature-delivery
+  title: Feature delivery
+  description: Plan to production with approvals at spec, design, PR, quality and release. Best for most product work.
+  publisher: { namespace: weftline, verified: weftline }
+  lifecycle: [plan, architecture, build, review, test, release]
+  tags: [flow, delivery, first-party]
+  license: Proprietary
+spec:
+  version: 0.1.0
+  digest: "sha256:259b43a841dd5755284def6775259649687dd11091133ca22e5e393ef6834ba9"
+  artifact: artifacts/sha256/259b43a841dd5755284def6775259649687dd11091133ca22e5e393ef6834ba9/
+  upstream:
+    source: git
+    url: https://github.com/weftline/weftline
+    ref: main
+    commit: 99f45c802bca8ead203436131dfb839db85a2a5d
+  compatibility:
+    targets:
+      - { name: weftline, as_of: "2026-10-15" }
+    runtimes: [native, managed_agents, copilot, local, runner, sandbox]
+  permissions:
+    data_classes: [confidential]
+    egress: []
+    rule_of_two: { untrusted_output: [], sensitive: [], egress: [] }
+  policy_defaults:
+    level: propose
+    autonomy_cap: L2
+    locked_rules: []
+  changelog: "CHANGELOG.md#010"

@@ -1,0 +1,319 @@
+# Feature delivery: plan to production with approvals at spec, design, PR, quality and release.
+# A Weftline template (services/internal/flow/templates). A project installs it as its own flow's
+# version 1, a draft: it starts work once it goes through staging and its owners' approval.
+apiVersion: weftline.dev/v1
+kind: Flow
+metadata:
+  name: feature-delivery
+  title: Feature delivery
+  owner: team:platform
+  description: Plan to production with approvals at spec, design, PR, quality and release. Best for most product work.
+  labels:
+    category: delivery
+spec:
+  inputs:
+    intent: { type: intent, required: true }
+  defaults:
+    autonomy: L2
+    budget: { usd: 400, per: intent, on_exceed: ask }
+    timeout: 60d
+    step_timeout: 2h
+    retry: { max_attempts: 3, initial_interval: 10s, backoff: 2.0, max_interval: 5m }
+    runtime: auto
+  policies: [no-agent-merge-to-main, rule-of-two]
+  # New work starts from the composer. To start it from your tracker too, add a trigger that names your
+  # team, for example:
+  #   - id: ticket-ready
+  #     event: tracker.issue.transitioned
+  #     when: "event.to_state == 'Ready' && event.team == 'Your team'"
+  #     dedupe: "event.issue_id"
+  #     start: intent
+  triggers:
+    - id: manual
+      event: manual
+
+  stages:
+    - id: plan
+      name: Plan
+      # Done when the EM and the PM approve the spec.
+      exit:
+        - "steps['spec-approval'].outcome == 'approved'"
+      steps:
+        - id: planner
+          type: agent
+          title: Planner
+          description: Drafts a spec with EARS acceptance criteria from cited context
+          agent: planner
+          runtime: native
+          budget: { usd: 2 }
+          context:
+            pack: auto
+            include: [product_brief, related_incidents, adrs]
+          skills: [ears-acceptance-criteria, decision-record]
+          tools:
+            - { tool: atlas.search, effect: allow }
+          input:
+            intent: "${{ inputs.intent }}"
+            feedback: "${{ loop.feedback }}"
+          output:
+            schema: spec.v1
+            artifacts: [{ kind: spec, name: spec }]
+        - id: spec-approval
+          type: gate
+          title: Spec approval
+          needs: [planner]
+          approvers: [{ role: em }, { role: pm }]
+          quorum: all
+          separation_of_duties: [author]
+          evidence: [steps.planner.outputs.spec, steps.planner.outputs.sources, steps.planner.outputs.open_questions]
+          timeout: 24h
+          reminders: [4h, 12h]
+          on_timeout: { escalate: { role: cto } }
+          on_changes: { goto: planner, max_loops: 3, carry: [comments] }
+          on_reject: fail
+          choices:
+            approve: { label: Approve, consequence: "Design starts: the UX explorer and the Architect pick up the spec." }
+            request_changes: { label: Request changes, consequence: "The Planner gets your comments and drafts again." }
+            reject: { label: Reject, consequence: "The run ends here; nothing is designed or built." }
+
+    - id: design
+      name: Design
+      # Done when design approves the variants, the contract and, for a risky change, the threat model.
+      exit:
+        - "steps['design-review'].outcome == 'approved'"
+      steps:
+        - id: ux-explorer
+          type: agent
+          title: UX explorer
+          description: Three variants against the design system
+          agent: ux-explorer
+          runtime: native
+          budget: { usd: 3 }
+          skills: [design-tokens-dtcg, wcag-22-review]
+          tools:
+            - { tool: figma.get_design_context, effect: allow }
+            - { tool: atlas.search, effect: allow }
+          input: { spec: "${{ steps.planner.outputs.spec }}", variants: 3 }
+          output: { schema: design.v1, artifacts: [{ kind: design, name: variants }] }
+        - id: architect
+          type: agent
+          title: Architect
+          description: API contract and C4 diagram
+          agent: architect
+          runtime: native
+          budget: { usd: 3 }
+          skills: [mermaid-c4, adr-writer, api-contract-review]
+          tools:
+            - { tool: github.get_file_contents, effect: allow }
+            - { tool: atlas.search, effect: allow }
+          input: { spec: "${{ steps.planner.outputs.spec }}" }
+          output: { schema: contract.v1, artifacts: [{ kind: contract, name: contract }, { kind: adr, name: adr }] }
+        - id: threat-model
+          type: agent
+          title: Threat modeler
+          description: STRIDE review when the change is risky
+          needs: [architect]
+          when: "steps.architect.outputs.risk in ['medium', 'high']"
+          agent: threat-modeler
+          runtime: native
+          budget: { usd: 1 }
+          input: { contract: "${{ steps.architect.outputs.contract }}" }
+          output: { schema: threat_model.v1, artifacts: [{ kind: threat_model, name: threat_model }] }
+        - id: design-review
+          type: gate
+          title: Design review
+          needs: [ux-explorer, architect, threat-model]
+          approvers: [{ role: design }]
+          quorum: all
+          rules:
+            - when: "steps.architect.outputs.risk in ['medium', 'high']"
+              approvers: [{ role: design }, { role: architect }]
+              quorum: all
+          separation_of_duties: [author]
+          evidence: [steps.ux-explorer.outputs.variants, steps.architect.outputs.contract, steps.threat-model.outputs.threat_model]
+          timeout: 48h
+          on_timeout: { escalate: { role: em } }
+          on_changes: { goto: ux-explorer, max_loops: 3, carry: [comments] }
+          choices:
+            approve: { label: Approve, consequence: "The chosen variant and the contract become inputs for Build." }
+            request_changes: { label: Request changes, consequence: "The UX explorer revises the frames with your comments." }
+            reject: { label: Reject, consequence: "The run ends here; nothing is built." }
+
+    - id: build
+      name: Build
+      # Done when every planned task has its pull request.
+      exit:
+        - "steps.builder.status == 'succeeded'"
+      steps:
+        - id: build-planner
+          type: planner
+          title: Build planner
+          description: Splits the spec into tasks for registered agents
+          agent: build-planner
+          components: [builder]
+          mode: fan_out
+          max_tasks: 6
+          max_parallel: 6
+          max_rounds: 3
+          stall_after_rounds: 2
+          budget: { usd: 20 }
+          plan_review:
+            when: "plan.risk in ['medium', 'high'] || plan.tasks.size() > 3"
+            approvers: [{ role: eng }]
+            timeout: 8h
+        - id: builder
+          type: agent
+          title: Builder
+          description: A coding agent opens one pull request per task
+          needs: [build-planner]
+          foreach: "steps['build-planner'].outputs.tasks"
+          max_parallel: 6
+          agent: builder
+          runtime: auto
+          budget: { usd: 4, per: task }
+          skills: [repo-conventions]
+          tools:
+            - { tool: github.create_pull_request, effect: allow }
+            - { tool: github.merge_pull_request, effect: deny, reason: "Agents never merge (POL-1)" }
+            - { tool: atlas.search, effect: allow }
+          attempts: { count: 2, select: judge, when: "item.risk in ['medium', 'high']" }
+          input: { task: "${{ item }}", spec: "${{ steps.planner.outputs.spec }}", feedback: "${{ loop.feedback }}" }
+          output: { schema: pr.v1, artifacts: [{ kind: pull_request, name: pr }] }
+
+    - id: verify
+      name: Verify
+      # Done when the quality bar holds, a code owner approves and a person merges.
+      exit:
+        - "steps['pr-approval'].outcome == 'approved'"
+        - "steps.merged.outcome == 'passed'"
+      steps:
+        - id: ci-checks
+          type: check
+          title: CI checks
+          description: Unit, contract, end-to-end, code scanning, secrets
+          wait_for: [{ github_checks: required }]
+          deadline: 2h
+          on_fail: { goto: build.builder, max_loops: 3, carry: [failures] }
+        - id: review-panel
+          type: agent
+          title: Review panel
+          description: Correctness, security, spec conformance and hallucination checks in parallel
+          agent: review-panel
+          runtime: native
+          autonomy: L3
+          budget: { usd: 1.5, per: task }
+          input: { prs: "${{ steps.builder.outputs.pr }}", spec: "${{ steps.planner.outputs.spec }}" }
+          output: { schema: review.v1, artifacts: [{ kind: review_packet, name: packet }] }
+        - id: quality-bar
+          type: gate
+          title: Quality bar
+          description: Automated policy gate
+          needs: [ci-checks, review-panel]
+          approvers: [{ role: qa }]
+          quorum: policy
+          checks:
+            - "steps['ci-checks'].outcome == 'passed'"
+            - "steps['review-panel'].outputs.critical_findings == 0"
+            - "steps['review-panel'].outputs.coverage_delta >= 0.0"
+            - "steps['review-panel'].outputs.criteria_traced_pct >= 90"
+          timeout: 24h
+          on_timeout: { escalate: { role: em } }
+          on_reject: { goto: build.builder, max_loops: 3, carry: [findings] }
+          choices:
+            approve: { label: Approve, consequence: "The pull requests go to code-owner review." }
+            reject: { label: Send back, consequence: "The Builder gets the findings and tries again." }
+        - id: pr-approval
+          type: gate
+          title: PR review
+          description: A code owner approves; agents never merge
+          needs: [quality-bar]
+          approvers: [{ codeowners: true }, { role: eng }]
+          quorum: any
+          separation_of_duties: [author, delegating_user]
+          evidence: [steps.review-panel.outputs.packet]
+          timeout: 24h
+          reminders: [4h]
+          on_timeout: { escalate: { role: em } }
+          on_changes: { goto: build.builder, max_loops: 3, carry: [comments] }
+          choices:
+            approve: { label: Approve, consequence: "The pull request can be merged by a person; the merge queue runs the checks again." }
+            request_changes: { label: Request changes, consequence: "The Builder addresses your comments in the same pull request." }
+        - id: merged
+          type: check
+          title: Merged by a person
+          needs: [pr-approval]
+          wait_for: [{ signal: github.pull_request.merged }]
+          deadline: 7d
+
+    - id: deploy
+      name: Deploy
+      # Done when the release is approved, your pipeline deploys it to production and the release watch stays quiet.
+      exit:
+        - "steps['release-approval'].outcome == 'approved'"
+        - "steps.deployed.outcome == 'passed'"
+      steps:
+        - id: change-risk
+          type: system
+          title: Change risk
+          description: Scores the merged change, which sets how many people approve its release
+          action: change.score_risk
+        - id: release-approval
+          type: gate
+          title: Release approval
+          description: Also answers the production deployment request from your pipeline
+          needs: [change-risk]
+          deployment: { environment: production }
+          approvers: [{ role: em }, { role: sre }]
+          quorum: any
+          rules:
+            - when: "run.risk == 'high'"
+              quorum: { count: 2 }
+          separation_of_duties: [author]
+          evidence: [steps.review-panel.outputs.packet]
+          timeout: 24h
+          on_timeout: { action: expire }
+          choices:
+            approve: { label: Approve, consequence: "Your pipeline's production deployment goes ahead, and Weftline watches it." }
+            reject: { label: Hold, consequence: "The release waits at the gate; nothing ships." }
+        - id: deployed
+          type: check
+          title: Deployed to production
+          needs: [release-approval]
+          wait_for: [{ deployment: production }]
+          deadline: 24h
+        - id: release-watch
+          type: monitor
+          title: Release watch
+          needs: [deployed]
+          source: { slo: touched }
+          condition: "burn_rate_5m > 14.4 || burn_rate_1h > 6.0"
+          window: 5m
+          for: 30m
+          emit: { start_flow: incident-response }
+
+    - id: observe
+      name: Observe
+      # Done when the change's SLOs stay healthy for a week and its lessons are proposed to Knowledge.
+      exit:
+        - "steps['slo-watch'].status == 'succeeded'"
+      steps:
+        - id: slo-watch
+          type: monitor
+          title: SLO watch
+          source: { slo: touched }
+          condition: "burn_rate_1h > 6.0 || burn_rate_5m > 14.4"
+          window: 1h
+          for: 7d
+          emit: { start_flow: incident-response }
+        - id: learnings
+          type: agent
+          title: Learnings to Knowledge
+          description: Proposes lessons, eval cases and policy changes for owners to approve
+          needs: [slo-watch]
+          agent: learnings
+          runtime: native
+          autonomy: L1
+          budget: { usd: 1 }
+          tools:
+            - { tool: atlas.propose_memory, effect: allow }
+          output: { schema: learnings.v1 }

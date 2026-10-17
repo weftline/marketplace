@@ -1,0 +1,21 @@
+# The platforms entries declare compatibility with (spec.compatibility.targets) and where their versions are
+# read (MARKETPLACE.md section 6.1). marketplace.watch follows these feeds nightly and opens a re-review when
+# one moves; an entry that names no target is never re-reviewed for a platform move. Sources: mcp_registry
+# (name), github_releases and github_tags (repository), oci_tags (image), npm (package), kubernetes_releases,
+# eks_versions, changelog (url).
+targets:
+  - name: weftline
+    description: Weftline itself, the product the first-party entries are built against
+    source: { kind: github_releases, repository: weftline/weftline }
+  - name: claude-code
+    description: Claude Code, the client the wl plugin and the skills run in
+    source: { kind: npm, package: "@anthropic-ai/claude-code" }
+  - name: mcp
+    description: The Model Context Protocol specification, by its dated revisions
+    source: { kind: changelog, url: https://modelcontextprotocol.io/specification/versioning }
+  - name: kubernetes
+    description: Kubernetes, by its minor versions
+    source: { kind: kubernetes_releases }
+  - name: eks
+    description: The Kubernetes versions in Amazon EKS standard support
+    source: { kind: eks_versions }

@@ -1,0 +1,273 @@
+# The catalog's intake and publish workflow (MARKETPLACE.md sections 3.3 and 5.1, ADR-0039, ADR-0041). Built in
+# weftline/weftline as tools/marketplace/repo-template (F-1201), where tools/marketplace's tests build its bundle
+# and verify a signature over it; the live repository weftline/marketplace is made from that template.
+#
+# On a pull request (stage 1, intake), the job validate runs `wl marketplace validate --pull-request` against the
+# base: the schema, the digest against the artifact, the namespace against publishers.yaml and CODEOWNERS, the
+# targets, the declared permissions against the files, the CHANGELOG convention, and the refusal of the
+# pipeline-owned provenance and review fields the pull request sets, and any change to or deletion of a version
+# main already has (versions are immutable, ADR-0041). The review pipeline's own pull requests, opened by its
+# GitHub App (the login in the repository variable WL_REVIEW_PIPELINE_LOGIN, F-1204), run with --pipeline: they
+# may write provenance and review, which are then checked as on main, and nothing else. The main ruleset requires
+# this check and has no bypass, so the pipeline's writes reach main the same way, with a code owner's review.
+#
+# On main (a push, or by hand with a channel), validate checks the merged catalog and the job bundle builds one OCI
+# artifact per catalog release, marketplace/catalog:<date>.<n>, with tools/bundle.mjs (the manifests, version
+# files, review records and changelogs as layers, the artifacts by digest), signs its manifest with cosign keyless
+# into a Sigstore bundle (what marketplace.sync verifies in process, F-1202), and attests its SLSA provenance. With
+# the repository variable ECR_REGISTRY, it pushes the release to the shared registry's mirror,
+# mirror/marketplace/catalog:<date>.<n>, as the OIDC role wl-ci-marketplace-publish (no long-lived key), signs the
+# pushed digest with cosign as build.yml signs Weftline's images, attaches the Sigstore bundle as a referrer and
+# pushes the provenance beside it. Without it, the release is built, signed and attested into the run's artifact
+# (the OCI layout as a tar and its Sigstore bundle: the exported bundle the self-hosted edition's
+# WL_MARKETPLACE_BUNDLE names), and nothing is pushed.
+#
+# Only weftline/marketplace publishes: the private overlay, made from the same template, validates its pull
+# requests and is merged into the public repository at release, never signed as itself.
+#
+# The signing identity is this workflow on main, https://github.com/weftline/marketplace/.github/workflows/
+# publish.yml@refs/heads/main, with the issuer https://token.actions.githubusercontent.com: the identity a cell's
+# marketplace.sync and the version files' provenance.signatures name.
+name: publish
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      channel:
+        description: The release's channel (MARKETPLACE.md section 6.3); a push to main releases to canary
+        type: choice
+        options: [canary, stable]
+        default: canary
+
+permissions: {}
+
+concurrency:
+  group: publish-${{ github.event_name }}-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  # The wl release whose `wl marketplace validate` checks the catalog, from WL_RELEASE_REPO (release-wl.yml in
+  # weftline/weftline publishes it, signed): the person who creates the repository sets it to the first release
+  # cut after F-1201 (the first with `marketplace validate`), and Renovate follows it.
+  WL_VERSION: 0.1.0
+  COSIGN_RELEASE: v2.6.5 # renovate: datasource=github-releases depName=sigstore/cosign
+
+jobs:
+  validate:
+    name: validate
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read # checkout
+    env:
+      WL_RELEASE_REPO: ${{ vars.WL_RELEASE_REPO }}
+      PIPELINE_LOGIN: ${{ vars.WL_REVIEW_PIPELINE_LOGIN }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 0 # a pull request is validated against its base
+      - uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
+        with:
+          cosign-release: ${{ env.COSIGN_RELEASE }}
+
+      # wl from its release, verified before it runs: checksums.txt is signed by release-wl.yml at the tag, and the
+      # archive's checksum is in it.
+      - run: |
+          set -euo pipefail
+          if [ -z "$WL_RELEASE_REPO" ]; then
+            echo "::error::the repository variable WL_RELEASE_REPO (where wl is released) is not set"
+            exit 1
+          fi
+          tag="wl/v$WL_VERSION"
+          base="https://github.com/$WL_RELEASE_REPO/releases/download/$tag"
+          archive="wl_${WL_VERSION}_linux_amd64.tar.gz"
+          mkdir -p "$RUNNER_TEMP/wl"
+          cd "$RUNNER_TEMP/wl"
+          for f in checksums.txt checksums.txt.sigstore.json "$archive"; do
+            curl -fsSL --proto '=https' -o "$f" "$base/$f"
+          done
+          cosign verify-blob --bundle checksums.txt.sigstore.json \
+            --certificate-identity "https://github.com/weftline/weftline/.github/workflows/release-wl.yml@refs/tags/$tag" \
+            --certificate-oidc-issuer https://token.actions.githubusercontent.com checksums.txt
+          grep -E "^[0-9a-f]{64}  $archive\$" checksums.txt | sha256sum -c -
+          tar -xzf "$archive" wl
+          ./wl version
+
+      - env:
+          EVENT: ${{ github.event_name }}
+          BASE_REF: ${{ github.base_ref }}
+          AUTHOR: ${{ github.event.pull_request.user.login }}
+        run: |
+          set -euo pipefail
+          if [ "$EVENT" = pull_request ]; then
+            pipeline=()
+            if [ -n "$PIPELINE_LOGIN" ] && [ "$AUTHOR" = "$PIPELINE_LOGIN" ]; then
+              pipeline=(--pipeline)
+            fi
+            "$RUNNER_TEMP/wl/wl" marketplace validate --pull-request --base "origin/$BASE_REF" "${pipeline[@]}" .
+          else
+            "$RUNNER_TEMP/wl/wl" marketplace validate .
+          fi
+
+  bundle:
+    name: bundle
+    needs: validate
+    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main' && github.repository == 'weftline/marketplace'
+    # One release at a time, whatever started it, so two runs never take the same <date>.<n>.
+    concurrency:
+      group: publish-bundle
+      cancel-in-progress: false
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    permissions:
+      contents: read # checkout
+      id-token: write # OIDC: the wl-ci-marketplace-publish role, cosign's keyless certificate and the attestation's
+      attestations: write # the SLSA provenance
+    env:
+      REGISTRY: ${{ vars.ECR_REGISTRY }}
+      REPOSITORY: mirror/marketplace/catalog
+      CHANNEL: ${{ inputs.channel || 'canary' }}
+      ISSUER: https://token.actions.githubusercontent.com
+      IDENTITY: https://github.com/${{ github.repository }}/.github/workflows/publish.yml@refs/heads/main
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24.21.0
+          package-manager-cache: false
+      - uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
+        with:
+          cosign-release: ${{ env.COSIGN_RELEASE }}
+      - if: env.REGISTRY != ''
+        uses: oras-project/setup-oras@005458ad77f1c8facd38a094e4af2e69e5607ff4 # v2.0.2
+        with:
+          version: 1.3.4 # renovate: datasource=github-releases depName=oras-project/oras
+
+      - id: meta
+        run: |
+          set -euo pipefail
+          {
+            echo "commit=$(git rev-parse HEAD)"
+            echo "created=$(TZ=UTC git show -s --format=%cd --date=format-local:%Y-%m-%dT%H:%M:%SZ HEAD)"
+            echo "day=$(date -u +%Y-%m-%d)"
+            if [ -n "$REGISTRY" ]; then
+              # <account>.dkr.ecr.<region>.amazonaws.com
+              echo "account=${REGISTRY%%.*}"
+              echo "region=$(cut -d. -f4 <<<"$REGISTRY")"
+            fi
+          } | tee -a "$GITHUB_OUTPUT"
+
+      - if: env.REGISTRY != ''
+        uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
+        with:
+          role-to-assume: arn:aws:iam::${{ steps.meta.outputs.account }}:role/wl-ci-marketplace-publish
+          aws-region: ${{ steps.meta.outputs.region }}
+      - if: env.REGISTRY != ''
+        env:
+          REGION: ${{ steps.meta.outputs.region }}
+        run: aws ecr get-login-password --region "$REGION" | oras login --username AWS --password-stdin "$REGISTRY"
+
+      # <date>.<n>: the day's next release number, from the tags already in the mirror (1 without a registry).
+      - id: release
+        env:
+          DAY: ${{ steps.meta.outputs.day }}
+        run: |
+          set -euo pipefail
+          n=1
+          if [ -n "$REGISTRY" ]; then
+            # A failure to list (credentials, network) fails the run rather than reusing a number.
+            tags=$(oras repo tags "$REGISTRY/$REPOSITORY")
+            last=$({ grep -E "^$DAY\.[0-9]+\$" <<<"$tags" || true; } | sed "s/^$DAY\.//" | sort -n | tail -1)
+            n=$(( ${last:-0} + 1 ))
+          fi
+          echo "release=$DAY.$n" | tee -a "$GITHUB_OUTPUT"
+
+      - id: build
+        env:
+          RELEASE: ${{ steps.release.outputs.release }}
+          COMMIT: ${{ steps.meta.outputs.commit }}
+          CREATED: ${{ steps.meta.outputs.created }}
+          SOURCE: ${{ github.server_url }}/${{ github.repository }}
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/out"
+          node tools/bundle.mjs --out "$RUNNER_TEMP/catalog" --release "$RELEASE" --channel "$CHANNEL" \
+            --commit "$COMMIT" --created "$CREATED" --source "$SOURCE" --tar "$RUNNER_TEMP/out/catalog-$RELEASE.oci.tar" \
+            | tee "$RUNNER_TEMP/bundle.json"
+          echo "digest=$(jq -r .digest "$RUNNER_TEMP/bundle.json")" >> "$GITHUB_OUTPUT"
+
+      # The release's signature over its OCI manifest, a Sigstore bundle: what a cell verifies in process against
+      # this workflow's identity and issuer (marketplace.sync), and what travels with an exported bundle file.
+      - env:
+          RELEASE: ${{ steps.release.outputs.release }}
+          DIGEST: ${{ steps.build.outputs.digest }}
+        run: |
+          set -euo pipefail
+          manifest="$RUNNER_TEMP/catalog/blobs/sha256/${DIGEST#sha256:}"
+          signature="$RUNNER_TEMP/out/catalog-$RELEASE.sigstore.json"
+          cosign sign-blob --yes --new-bundle-format --bundle "$signature" "$manifest"
+          cosign verify-blob --new-bundle-format --bundle "$signature" \
+            --certificate-identity "$IDENTITY" --certificate-oidc-issuer "$ISSUER" "$manifest"
+
+      # The release in the mirror: pushed by tag from the layout (the digest is checked), signed by digest as
+      # build.yml signs images, and its Sigstore bundle attached as a referrer.
+      - if: env.REGISTRY != ''
+        env:
+          RELEASE: ${{ steps.release.outputs.release }}
+          DIGEST: ${{ steps.build.outputs.digest }}
+        run: |
+          set -euo pipefail
+          ref="$REGISTRY/$REPOSITORY"
+          oras cp --from-oci-layout "$RUNNER_TEMP/catalog:$RELEASE" "$ref:$RELEASE"
+          pushed=$(oras manifest fetch --descriptor "$ref:$RELEASE" | jq -r .digest)
+          if [ "$pushed" != "$DIGEST" ]; then
+            echo "::error::$ref:$RELEASE is $pushed, not the built $DIGEST"
+            exit 1
+          fi
+          cosign sign --yes "$ref@$DIGEST"
+          cosign verify --certificate-identity "$IDENTITY" --certificate-oidc-issuer "$ISSUER" "$ref@$DIGEST" > /dev/null
+          cd "$RUNNER_TEMP/out"
+          oras attach --artifact-type application/vnd.dev.sigstore.bundle.v0.3+json "$ref@$DIGEST" \
+            "catalog-$RELEASE.sigstore.json:application/vnd.dev.sigstore.bundle.v0.3+json"
+
+      # SLSA provenance from GitHub's own attestation of this run: beside the release in the mirror, or over the
+      # exported file without a registry.
+      - if: env.REGISTRY != ''
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-name: ${{ env.REGISTRY }}/${{ env.REPOSITORY }}
+          subject-digest: ${{ steps.build.outputs.digest }}
+          push-to-registry: true
+      - if: env.REGISTRY == ''
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-path: ${{ runner.temp }}/out/catalog-${{ steps.release.outputs.release }}.oci.tar
+
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: catalog-${{ steps.release.outputs.release }}
+          path: ${{ runner.temp }}/out/
+          retention-days: 90
+          if-no-files-found: error
+
+      - env:
+          RELEASE: ${{ steps.release.outputs.release }}
+          DIGEST: ${{ steps.build.outputs.digest }}
+        run: |
+          {
+            echo "### marketplace/catalog:$RELEASE ($CHANNEL)"
+            echo "- digest: \`$DIGEST\`"
+            echo "- signed by \`$IDENTITY\` (cosign keyless), with SLSA provenance"
+            if [ -n "$REGISTRY" ]; then
+              echo "- pushed to \`$REGISTRY/$REPOSITORY:$RELEASE\`"
+            else
+              echo "- ECR_REGISTRY is not set: kept as the run's artifact catalog-$RELEASE; nothing pushed"
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"

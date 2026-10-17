@@ -1,0 +1,12 @@
+# Who reviews what (MARKETPLACE.md section 3.2, SECURITY.md section 9.7). Every pull request needs a code
+# owner's review; a namespace's entries go to its owners (publishers.yaml) and to Weftline's reviewers.
+*                       @weftline/marketplace-reviewers
+/catalog/               @weftline/marketplace-reviewers
+/catalog/*/weftline/    @weftline/marketplace-reviewers
+/artifacts/             @weftline/marketplace-reviewers
+/publishers.yaml        @weftline/security
+/targets.yaml           @weftline/marketplace-reviewers
+/revocations/           @weftline/security
+/.github/               @weftline/security
+/tools/                 @weftline/security
+/CODEOWNERS             @weftline/security

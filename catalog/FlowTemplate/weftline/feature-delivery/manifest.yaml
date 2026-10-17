@@ -1,0 +1,13 @@
+# Feature delivery, Weftline's maintained flow template (services/internal/flow/templates/feature-delivery,
+# F-0609): plan to production with approvals at spec, design, PR, quality and release. Each version's artifact
+# is the template folder (flow.yaml, dryrun.yaml, eval.yaml), pinned by its content digest.
+apiVersion: marketplace.weftline.dev/v1
+kind: FlowTemplate
+metadata:
+  id: weftline/feature-delivery
+  title: Feature delivery
+  description: Plan to production with approvals at spec, design, PR, quality and release. Best for most product work.
+  publisher: { namespace: weftline, verified: weftline }
+  lifecycle: [plan, architecture, build, review, test, release]
+  tags: [flow, delivery, first-party]
+  license: Proprietary

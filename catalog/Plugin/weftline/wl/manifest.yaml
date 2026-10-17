@@ -1,0 +1,13 @@
+# The wl plugin for Claude Code (integrations/claude-code/plugin, F-0511): the skills /wl:work, /wl:context,
+# /wl:lesson and /wl:status, hooks that call `wl hook`, and the Context MCP server. Each version's artifact is
+# the plugin folder at the release's tag, pinned by its content digest.
+apiVersion: marketplace.weftline.dev/v1
+kind: Plugin
+metadata:
+  id: weftline/wl
+  title: wl for Claude Code
+  description: Work on a Weftline intent in Claude Code, with its context and your organization's rules, and keep the record. The skills /wl:work, /wl:context, /wl:lesson and /wl:status, hooks that call wl hook, and the Context MCP server.
+  publisher: { namespace: weftline, verified: weftline }
+  lifecycle: [build, review, learn]
+  tags: [claude-code, plugin, first-party]
+  license: Proprietary

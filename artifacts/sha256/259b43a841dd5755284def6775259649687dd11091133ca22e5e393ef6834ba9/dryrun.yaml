@@ -1,0 +1,26 @@
+# Feature delivery's dry run (FlowService.StartDryRun with fake outputs): a low-risk intent goes from its spec
+# to production. The Architect's sample contract rates the change medium, so the threat model runs.
+intent:
+  title: Saved card selection at checkout
+  risk: low
+status: succeeded
+steps:
+  plan/planner: succeeded
+  plan/spec-approval: succeeded
+  design/ux-explorer: succeeded
+  design/architect: succeeded
+  design/threat-model: succeeded
+  design/design-review: succeeded
+  build/build-planner: succeeded
+  build/builder: succeeded
+  verify/ci-checks: succeeded
+  verify/review-panel: succeeded
+  verify/quality-bar: succeeded
+  verify/pr-approval: succeeded
+  verify/merged: succeeded
+  deploy/change-risk: succeeded
+  deploy/release-approval: succeeded
+  deploy/deployed: succeeded
+  deploy/release-watch: succeeded
+  observe/slo-watch: succeeded
+  observe/learnings: succeeded

@@ -1,0 +1,43 @@
+apiVersion: marketplace.weftline.dev/v1
+kind: McpServer
+metadata:
+  id: weftline/context
+  title: Weftline Knowledge
+  description: "The Context MCP server on Weftline's api (/mcp): search, documents, context packs, cited answers and graph neighbors from the org's knowledge, and memory proposals to a project's inbox, under the person's or the task's own token."
+  publisher: { namespace: weftline, verified: weftline }
+  lifecycle: [plan, architecture, build, review, learn]
+  tags: [knowledge, context, atlas, first-party]
+  license: Proprietary
+spec:
+  version: 0.1.0
+  # The fingerprint of the six definitions of services/internal/atlas/mcp/tools.json (hub.AtlasRelease.Fingerprint).
+  digest: "debff98b9c46860c903c612f3fec3f472e4ad2b46b985b6d1855974ae8186e9e"
+  upstream:
+    source: weftline
+    url: https://github.com/weftline/weftline
+    ref: main
+    commit: 4cd11b3f7c32a74215dc98cb6036fb1ec3027dbc
+  transport: { type: streamable-http, protocol_versions: ["2026-07-28", "2025-11-25"] }
+  auth: { mode: user_oauth, authorization_server: https://app.weftline.ai, resource: https://app.weftline.ai/mcp }
+  compatibility:
+    targets:
+      - { name: weftline, as_of: "2026-10-15" }
+      - { name: mcp, as_of: "2026-07-28" }
+    runtimes: [native, managed_agents, copilot, local, runner, sandbox]
+  permissions:
+    tools:
+      read: [search, get_document, get_pack, answer, graph_neighbors]
+      propose: [propose_memory]
+    flags:
+      untrusted_output: [search, get_document, get_pack, answer, graph_neighbors]
+    credentials:
+      - { purpose: tool_call, kind: token, scope: "the caller's own Weftline token (a CLI, session or runner task token)", max_lifetime: 1h, class: propose, delegated: true }
+    data_classes: [confidential, personal]
+    egress:
+      - { host: app.weftline.ai, port: 443 }
+    rule_of_two: { untrusted_output: [search, get_document, get_pack, answer, graph_neighbors], sensitive: [], egress: [] }
+  policy_defaults:
+    level: propose
+    autonomy_cap: L3
+    locked_rules: []
+  changelog: "CHANGELOG.md#010"

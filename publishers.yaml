@@ -1,0 +1,11 @@
+# The namespaces that publish to the catalog and how each was verified (MARKETPLACE.md section 3.2):
+# weftline for first party; io.github.<login> for a GitHub account, verified through its OIDC token or OAuth;
+# a reverse domain such as com.stripe, verified by a DNS TXT record or an HTTP challenge. CODEOWNERS routes
+# each namespace's pull requests to its owners and to Weftline's reviewers; `wl marketplace validate` refuses
+# an entry whose namespace is not here. Weftline publishes alone in the first milestone (ADR-0039).
+publishers:
+  - namespace: weftline
+    verified: weftline
+    verified_at: "2026-10-15"
+    contact: marketplace@weftline.ai
+    owners: ["@weftline/marketplace-reviewers"]
